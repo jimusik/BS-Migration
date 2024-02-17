@@ -1,0 +1,279 @@
+#!/bin/bash
+
+# Check if jq is installed
+if ! command -v jq &> /dev/null; then
+    echo "jq is required but it's not installed. Aborting." >&2
+    exit 1
+fi
+
+function create_books() {
+
+    ./bs books create -n "$1" -d "Topic about $1"
+
+}
+
+function create_chapters() {
+    # bs chapters create -b 4242 -n "First Chapter" -d "Obviously the first chapter"
+    ./bs chapters create -b "$1" -n "$2" -d "$2 [ScriptGenerated]"
+}
+
+function create_pages() {
+    # passing arguments $1 book_id $2 filename $3 chapter_id
+    # ./bs pages create -c 3 -n "New User Setup" -m @../knowledgebase/Software/BitWarden/New_User_Setup.md
+    fullfilelocation="$1$2"
+    if [ "$3"  == 0 ]; then
+        ./bs pages create -b "$4" -n "$2" -m @"$fullfilelocation"
+    else
+    ./bs pages create -c "$3" -n "$2" -m @"$fullfilelocation"
+    fi
+}
+
+function get_book_id() {
+
+    # get rid of spaces
+    title="${1// /%20}"
+    # old query before we fixed the bs program
+    # ./bs books list | jq -c --arg name "$1" '.data[] | select( .name | contains($name))' | jq .id    
+    ./bs books list -f %5Bname%5D="$title" | jq '.data[].id'
+}
+
+function get_chapter_id() {
+
+    # get rid of spaces
+    title="${2// /%20}"
+    # old query before we fixed the bs program
+    #./bs chapters list | jq -c --argjson book "$1" --arg title "$2" '.data[] | select( .book_id == $book) | select( .name | contains($title))' | jq .id    
+    ./bs chapters list -f %5Bname%5D="$title" | jq -c --argjson book "$1" '.data[] | select( .book_id == $book)' | jq '.id'
+}
+
+function get_page_id() {
+
+    # get rid of spaces
+    title="${1// /%20}"
+    # old query before we fixed the bs program
+    # ./bs pages list | jq --arg title "$1" '.data[] | select( .name | contains($title))' | jq .id    
+    if [ "$2" -eq 0 ]; then
+        #search for pages at root of book
+        ./bs pages list -f %5Bname%5D="$title" | jq -c --argjson book "$3" '.data[] | select( .book_id == $book)' | jq '.id'
+    else
+        #search for pages under the ChapterID
+        ./bs pages list -f %5Bname%5D="$title" | jq -c --argjson chapter "$2" '.data[] | select( .chapter_id == $chapter)' | jq '.id'
+    fi
+}
+
+# Change function if get_book_id is called
+function process_books() {
+    book_id=$(get_book_id "$1")
+    echo book_id
+    if [ -z "$book_id" ]; then
+        echo "Book '$1' not found."
+        create_books "$1"
+    else
+    echo $book_id
+    fi
+}
+
+# Change function if get_chapter_id is called
+function process_chapters() {
+    # this needs to pull the folder name
+    book_id=$(get_book_id "$2")
+    if [ -z "$book_id" ]; then
+        echo "Book '$1' not found."
+        exit 1
+    else
+    chapter_id=$(get_chapter_id "$book_id" "${1}")
+        if [ -z $chapter_id ]; then
+            echo "Chapter '$1' not found."
+            # hiding this so I don't create anything on accident
+            create_chapters "$book_id" "$1"
+        fi
+    fi
+}
+
+# Change function if get_page_id is called
+function process_pages() {
+    # this needs to pull the folder name
+    book_id=$(get_book_id "$2")
+    if [ "${3}" = 0 ]; then
+        chapter_id=0
+    else
+        chapter_id=$(get_chapter_id "$book_id" "${3}")
+    fi
+    if [ -z "$book_id" ] || [ -z "$chapter_id" ]; then
+        echo "Book/Chapter '$1' not found."
+        exit 1
+    else
+    page_id=$(get_page_id "${1}" "$chapter_id" "$book_id")
+        if [ -z $page_id ]; then
+            echo "Page '$1' not found."
+            create_pages "$folder_location" "$1" "$chapter_id" "$book_id"
+        else
+            Echo "Page with '$1' already exists. Skipping..."
+        fi
+    fi
+}
+
+function skip() {
+
+    echo "skipping $1"
+
+}
+
+function walk_folder() {
+    # store argument 1 as folder_location
+    local folder_location="$1"
+    # store array into skip_names from passsed arugment 2
+    #local skip_names=("${2}")
+    # store imput 3 as called_function and tst
+    local called_function="$2"
+    # making sure we have a name of a book for chapters - should be Null if run on books
+    local global_bookname="$3"
+    if type -t $called_function >/dev/null; then
+        echo "Function exists."
+    else
+        echo "Function does not exist."
+        exit 1
+    fi
+
+    for d in "$folder_location"*;
+    do
+        if [ -d "$d" ]; then
+            foldername="$(basename "$d")"
+
+            skip_folder=false        
+            for item in "${skip_name[@]}"; do
+                if [ "$foldername" == "$item" ]; then               
+                    skip_folder=true
+                    break
+                fi
+            done
+            if [ "$skip_folder" = false ]; then
+                "$called_function" "$foldername" "$global_bookname"
+            else
+                skip "$foldername"
+            fi
+        fi
+    done
+}
+
+function walk_pages() {
+    # store argument 1 as folder_location
+    local folder_location="$1"
+    # store array into skip_names from passsed arugment 2
+    #local skip_names=("${2}")
+    # store imput 3 as called_function and tst
+    local called_function="$2"
+    # making sure we have a name of a book for chapters - should be Null if run on books
+    local global_bookname="$3"
+    local chapter="$4"
+    if type -t $called_function >/dev/null; then
+        echo "Function exists."
+    else
+        echo "Function does not exist."
+        exit 1
+    fi
+
+    # Use find command to search for files in folder_location
+    for file in "$folder_location"/*; do
+        if [ -f "$file" ]; then
+            filename=$(basename "$file")
+            if [[ $file == *.md ]]; then
+                "$called_function" "$filename" "$global_bookname" "$chapter"
+            elif [[ $file == *.MD ]]; then
+                "$called_function" "$filename" "$global_bookname" "$chapter"
+            else
+                echo "Skipping $file that's not MarkDown"
+            fi
+        fi
+    done
+}
+
+function check_folder_slash() {
+    # Ensure folder location ends with a slash for correct globbing
+    if [[ ! "$1" == */ ]]; then
+        folder_location="${1}/"
+    fi
+}
+called_function="$1"
+skip_name=()
+
+# get input for create_books
+if [ "$called_function" == "create_books" ]; then
+    echo "Please provide a folder for walking the books:"
+    read -r folder_location
+    check_folder_slash "$folder_location"
+    while true; do
+        read -p "Any folder names to skip (or Enter to finish)?" name
+        if [ -z "$name" ]; then
+            echo "Done, skipping $skip_name - press any key to continue"
+            break
+        fi
+        skip_name+=("$name")
+    done
+    walk_folder "$folder_location" "process_books"
+fi
+
+# get input for create_chapters
+if [ "$called_function" == "create_chapters" ]; then
+    echo "Please provide a folder for walking the chapters:"
+    read -r folder_location
+    check_folder_slash "$folder_location"    
+    foldername="$(basename "$folder_location")"
+    while true; do
+        read -p "Any folder names to skip (or Enter to finish)?" name
+        if [ -z "$name" ]; then
+            echo "Done, skipping $skip_name - press any key to continue"
+            break
+        fi
+        skip_name+=("$name")
+    done
+    # book_name=$(dirname "$folder_location")
+    book_name="$(basename "$folder_location")"
+    walk_folder "$folder_location" "process_chapters" "$book_name"
+fi
+
+# get input for create_pages
+if [ "$called_function" == "create_pages" ]; then
+    echo "Please provide a folder for walking the pages:"
+    read -r folder_location
+    check_folder_slash "$folder_location"    
+    echo "Is this a root folder y/n?"
+    read -r root
+    chapter_name="$(basename "$folder_location")"
+    if [ $root == "y" ]; then
+        book_name="$(basename "$folder_location")"
+        chapter_name=0
+    else
+        book_name="$(basename "$(dirname "$folder_location")")"
+    fi
+    walk_pages "$folder_location" "process_pages" "$book_name" "$chapter_name"
+fi
+
+#Pull full book
+if [ "$called_function" == "pull_book" ]; then
+    echo "Please provide a location for walking the full book:"
+    read -r folder_location
+    check_folder_slash "$folder_location"
+    while true; do
+        read -p "Any folder names to skip (or Enter to finish)?" name
+        if [ -z "$name" ]; then
+            echo "Done, skipping $skip_name - press any key to continue"
+            break
+        fi
+        skip_name+=("$name")
+    done
+    #Create Chapters
+    foldername="$(basename "$folder_location")"
+    book_name="$(basename "$folder_location")"
+    walk_folder "$folder_location" "process_chapters" "$book_name"
+
+
+    chapter_name="$(basename "$folder_location")"
+    if [ $root == "true" ]; then
+        book_name="$(basename "$folder_location")"
+        chapter_name=0
+    else
+        book_name="$(basename "$(dirname "$folder_location")")"
+    fi
+    walk_pages "$folder_location" "process_pages" "$book_name" "$chapter_name"
+fi
